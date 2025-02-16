@@ -1,7 +1,7 @@
 # Compiler
 Este archivo muestra el avance de un grupo de estudiante en crear su propio compilador básico (Elementary Compiler Program)
 # Lexer para un Lenguaje de Programación
-###Integrantes
+### Integrantes
 - Juan Felipe Arbeláez Osorio
 - Victor Alejandro Buendia Henao
 - Juan Sebastián valencia Uribe

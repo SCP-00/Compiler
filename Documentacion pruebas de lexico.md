@@ -96,13 +96,5 @@ Comprueba que el lexer detecte caracteres ilegales y no los incluya en la lista 
 
 Ejecuta las pruebas con el siguiente comando en la terminal:
 ```bash
-python -m unittest nombre_del_archivo.py
+python -m unittest test_analizar_lexico.py
 ```
-Si el lexer funciona correctamente, no se mostrarán errores en la salida.
-
-**Nota:** Asegúrate de que `analizar_lexico.py` esté en la misma carpeta o en una ruta accesible para ser importado en este archivo de pruebas.
-
----
-
-Estas pruebas ayudan a garantizar que el lexer identifica correctamente los tokens en distintos escenarios. ¡Úsalas para validar y mejorar el lexer conforme agregues más características! 🎯
-

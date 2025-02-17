@@ -84,7 +84,19 @@ El lexer usa expresiones regulares para identificar distintos tipos de tokens. L
 5. Detectar errores de caracteres ilegales.
 
 ---
-
+# Problemas iniciales
+Por falta de atencion durante la clase cometimos el error de ubicar primero algunos tokenz de un solo caracteres antes que sus versiones compuestas de dos caracteres
+### Ejemplo
+```
+# Operadores compuestos (más de un carácter)
+    ('LE', r'<='), ('GE', r'>='), ('EQ', r'=='), ('NE', r'!='), 
+    ('LAND', r'&&'), ('LOR', r'\|\|'),
+    
+    # Operadores de un solo carácter
+    ('LT', r'<'), ('GT', r'>'), ('PLUS', r'\+'), ('MINUS', r'-'),
+    ('TIMES', r'\*'), ('DIVIDE', r'/'), ('GROW', r'\^'), ('ASSIGN', r'='),
+```
+donde los operadores de un solo caracter como el `mayor que` y el `menor que` estaban antes que su version compuesta `mayor o igual que` y `menor o igual que` respectivamente
 ## 📝 Nota
 
 - Es un lexer básico, no un parser y mucho menos un compilador completo. No verifica la sintaxis completa, solo descompone el código en tokens.

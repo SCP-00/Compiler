@@ -18,28 +18,46 @@ TOKEN_SPEC = [
     ('TRUE', r'\btrue\b'),
     ('FALSE', r'\bfalse\b'),
     ('INPUT', r'\binput\b'),
-
+    # Nuevas palabras reservadas para funciones matemáticas
+    ('LOG', r'\blog\b'),
+    ('LN', r'\bln\b'),
+    ('SIN', r'\bsin\b'),
+    ('COS', r'\bcos\b'),
+    ('TAN', r'\btan\b'),
+    ('SQRT', r'\bsqrt\b'),
     
     # Literales numéricos y de caracteres
-    # FLOAT antes que INTEGER para que se reconozcan números decimales completos.
+    # Notación científica y diferentes bases numéricas
+    ('SCIENTIFIC', r'\d+(\.\d*)?[eE][+-]?\d+'),
+    ('HEX', r'0[xX][0-9a-fA-F]+'),
+    ('BINARY', r'0[bB][01]+'),
+    ('OCTAL', r'0[oO][0-7]+'),
     ('FLOAT', r'\d+\.\d*|\.\d+'),
     ('INTEGER', r'\d+'),
     ('CHAR', r"'([^\\]|\\.)'"),
+    ('STRING', r'"([^\\"]|\\.)*"'),
     
     # Identificadores (después de las palabras reservadas)
     ('ID', r'[a-zA-Z_][a-zA-Z_0-9]*'),
     
     # Operadores compuestos (más de un carácter)
+    ('INT_DIV', r'//'),
+    ('POWER', r'\*\*'),  # Potencia alternativa a ^
     ('LE', r'<='), ('GE', r'>='), ('EQ', r'=='), ('NE', r'!='), 
     ('LAND', r'&&'), ('LOR', r'\|\|'),
+    ('INC', r'\+\+'), ('DEC', r'--'),
+    ('PLUS_ASSIGN', r'\+='), ('MINUS_ASSIGN', r'-='), 
+    ('TIMES_ASSIGN', r'\*='), ('DIV_ASSIGN', r'/='),
+    ('MOD_ASSIGN', r'%='), ('POW_ASSIGN', r'\^='),
     
     # Operadores de un solo carácter
     ('LT', r'<'), ('GT', r'>'), ('PLUS', r'\+'), ('MINUS', r'-'),
-    ('TIMES', r'\*'), ('DIVIDE', r'/'), ('GROW', r'\^'), ('ASSIGN', r'='),
+    ('TIMES', r'\*'), ('DIVIDE', r'/'), ('MOD', r'%'), ('GROW', r'\^'), ('ASSIGN', r'='),
     
     # Otros símbolos
     ('SEMI', r';'), ('LPAREN', r'\('), ('RPAREN', r'\)'),
-    ('LBRACE', r'\{'), ('RBRACE', r'\}'), ('COMMA', r','), ('DEREF', r'`'),
+    ('LBRACE', r'\{'), ('RBRACE', r'\}'), ('LBRACKET', r'\['), ('RBRACKET', r'\]'),
+    ('COMMA', r','), ('DOT', r'\.'), ('COLON', r':'), ('DEREF', r'`'),
     
     # Comentarios (pueden ser de línea o de bloque)
     ('COMMENT', r'//.*|/\*[\s\S]*?\*/'),

@@ -1,19 +1,10 @@
 # Lexer para un Lenguaje de Programación
 ### Integrantes
-- Victor Alejandro Buendia Henao
-- Juan Sebastián valencia Uribe
-- Jose David Marin
+- Juan Felipe Arbeláez Osorio - **1085716748**
+- Victor Alejandro Buendia Henao - **1113780765**
+- Juan Sebastián valencia Uribe - **1087988229**
+
 Este proyecto es un **analizador léxico** (lexer) escrito en Python. Su función es tomar un fragmento de código fuente y descomponerlo en **tokens**, que son las unidades fundamentales del lenguaje.
-
-## 📦 Archivos clave:
-
-- **UTP_lexer.py**: Este archivo descompone el código en tokens usando expresiones regulares, manejando identificadores, operadores y literales. ¡También detecta errores como caracteres ilegales! 🧐
-  
-- **UTP_parser.py**: Se encarga de organizar los tokens en estructuras lógicas y generar nodos AST que representan el código en un formato más comprensible para la máquina. 🎯
-
-- **UTP_AST_nodes.py**: Aquí es donde definimos los diferentes nodos del AST que representan operaciones como literales, declaraciones de variables, operaciones binarias, y más. 💡
-
-- **UTP_error_handler.py**: Administra los errores que se encuentran durante el análisis del código y los muestra de manera clara y comprensible. ❌
 
 ## 📌 Características
 

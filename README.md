@@ -1,12 +1,19 @@
-# Compiler
-Este archivo muestra el avance de un grupo de estudiante en crear su propio compilador básico (Elementary Compiler Program)
 # Lexer para un Lenguaje de Programación
 ### Integrantes
-- Juan Felipe Arbeláez Osorio
 - Victor Alejandro Buendia Henao
 - Juan Sebastián valencia Uribe
-
+- Jose David Marin
 Este proyecto es un **analizador léxico** (lexer) escrito en Python. Su función es tomar un fragmento de código fuente y descomponerlo en **tokens**, que son las unidades fundamentales del lenguaje.
+
+## 📦 Archivos clave:
+
+- **UTP_lexer.py**: Este archivo descompone el código en tokens usando expresiones regulares, manejando identificadores, operadores y literales. ¡También detecta errores como caracteres ilegales! 🧐
+  
+- **UTP_parser.py**: Se encarga de organizar los tokens en estructuras lógicas y generar nodos AST que representan el código en un formato más comprensible para la máquina. 🎯
+
+- **UTP_AST_nodes.py**: Aquí es donde definimos los diferentes nodos del AST que representan operaciones como literales, declaraciones de variables, operaciones binarias, y más. 💡
+
+- **UTP_error_handler.py**: Administra los errores que se encuentran durante el análisis del código y los muestra de manera clara y comprensible. ❌
 
 ## 📌 Características
 
@@ -23,7 +30,7 @@ Este proyecto es un **analizador léxico** (lexer) escrito en Python. Su funció
 
 El lexer analiza código como este:
 
-```c
+```
 var x = 10;
 if (x >= 5) {
     print(x);
@@ -84,19 +91,7 @@ El lexer usa expresiones regulares para identificar distintos tipos de tokens. L
 5. Detectar errores de caracteres ilegales.
 
 ---
-# Problemas iniciales
-Por falta de atencion durante la clase cometimos el error de ubicar primero algunos tokenz de un solo caracteres antes que sus versiones compuestas de dos caracteres
-### Ejemplo
-```
-# Operadores compuestos (más de un carácter)
-    ('LE', r'<='), ('GE', r'>='), ('EQ', r'=='), ('NE', r'!='), 
-    ('LAND', r'&&'), ('LOR', r'\|\|'),
-    
-    # Operadores de un solo carácter
-    ('LT', r'<'), ('GT', r'>'), ('PLUS', r'\+'), ('MINUS', r'-'),
-    ('TIMES', r'\*'), ('DIVIDE', r'/'), ('GROW', r'\^'), ('ASSIGN', r'='),
-```
-donde los operadores de un solo caracter como el `mayor que` y el `menor que` estaban antes que su version compuesta `mayor o igual que` y `menor o igual que` respectivamente
+
 ## 📝 Nota
 
 - Es un lexer básico, no un parser y mucho menos un compilador completo. No verifica la sintaxis completa, solo descompone el código en tokens.

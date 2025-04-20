@@ -1,0 +1,46 @@
+/* Estilos personalizados */
+body {
+    font-family: 'Inter', sans-serif;
+}
+
+/* Estilos para bloques de código */
+.code_block pre {
+    background-color: #2d2d2d;
+    color: #f8f8f2;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9em;
+}
+
+/* Estilos para contenido Markdown */
+.md h1 { font-size: 1.875rem; font-weight: bold; margin-bottom: 0.5rem; }
+.md h2 { font-size: 1.5rem; font-weight: bold; margin-bottom: 0.5rem; }
+.md h3 { font-size: 1.25rem; font-weight: bold; margin-bottom: 0.5rem; }
+.md p { margin-bottom: 1rem; line-height: 1.6; }
+.md code { background-color: #e2e8f0; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-size: 0.9em;}
+.md ul { list-style: disc; margin-left: 1.5rem; margin-bottom: 1rem;}
+.md ol { list-style: decimal; margin-left: 1.5rem; margin-bottom: 1rem;}
+.md blockquote { border-left: 4px solid #cbd5e1; padding-left: 1rem; margin-bottom: 1rem; color: #4a5568; font-style: italic; }
+
+/* Clase para ocultar secciones */
+.page-section {
+    display: none; /* Oculta todas las secciones por defecto */
+}
+.page-section.active {
+    display: block; /* Muestra solo la sección que tiene la clase 'active' */
+}
+
+/* Estilo para el enlace de navegación activo */
+nav a.active {
+    font-weight: bold;
+    color: #e0f2fe; /* Un azul más claro para destacar */
+    border-bottom: 2px solid #e0f2fe;
+}
+
+/* Estilo opcional para el enlace de navegación activo */
+.nav-link.active {
+    font-weight: bold; /* O cualquier otro estilo para destacarlo */
+    /* background-color: rgba(255, 255, 255, 0.1); */ /* Ejemplo de fondo */
+}

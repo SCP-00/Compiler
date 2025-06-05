@@ -1,6 +1,6 @@
 # Parser.py
 import sys
-from typing import List, Optional
+from typing import List, Optional, Union, Callable 
 from Lexer import Token
 from Nodes_AST import * 
 from Error import ErrorHandler
@@ -16,20 +16,18 @@ class Parser:
 
     def _log_debug(self, message: str):
         if self.debug_mode:
-            # Basic indentation based on call stack depth for readability
-            # This is a simplified version of your previous debug stack logic
-            depth = sum(1 for frame in sys._current_frames().values() if frame.f_code.co_name.startswith('parse_'))
+            depth = 0
+            try: # Calculate depth based on 'parse_' methods in call stack
+                depth = sum(1 for frame_info in sys._current_frames().values() 
+                            if frame_info.f_code.co_name.startswith('parse_'))
+            except Exception: # sys._current_frames might not be available or fail
+                pass
             indent = "  " * depth
             print(f"{indent}[Parser DEBUG] {message}")
 
     def advance(self) -> None:
-        # if self.debug_mode and self.current_token:
-        #     self._log_debug(f"Consuming: {self.current_token.type} = '{self.current_token.value}' at line {self.current_token.lineno}")
         self.pos += 1
         self.current_token = self.tokens[self.pos] if self.pos < len(self.tokens) else None
-        # if self.debug_mode and self.current_token:
-        #     self._log_debug(f"Next token: {self.current_token.type} ('{self.current_token.value}')")
-
 
     def peek(self, offset: int = 1) -> Optional[Token]:
         peek_pos = self.pos + offset 
@@ -38,7 +36,6 @@ class Parser:
     def match(self, *expected_types: str) -> Optional[Token]:
         if self.current_token and self.current_token.type in expected_types:
             token = self.current_token
-            # self._log_debug(f"Matched and consumed: {token.type} ('{token.value}')")
             self.advance()
             return token
         return None
@@ -46,7 +43,6 @@ class Parser:
     def consume(self, expected_type: str, error_message: str) -> Optional[Token]:
         if self.current_token and self.current_token.type == expected_type:
             token = self.current_token
-            # self._log_debug(f"Consumed expected: {token.type} ('{token.value}')")
             self.advance()
             return token
         
@@ -55,7 +51,6 @@ class Parser:
         current_type_str = f"'{self.current_token.type}{current_val_str}'" if self.current_token else "end of file"
         full_error_message = f"{error_message} (Expected '{expected_type}', got {current_type_str})"
         self.error_handler.add_syntax_error(full_error_message, err_lineno)
-        # self._log_debug(f"Consume FAILED: {full_error_message}")
         return None
     
     def consume_type(self, error_message_prefix: str) -> Optional[Token]:
@@ -65,7 +60,6 @@ class Parser:
             self.error_handler.add_syntax_error(f"{error_message_prefix} (e.g., int, float, bool, string, char)", err_lineno)
             return None
         
-        # Normalize type value for AST
         if type_token.value == "float_type": type_token.value = "float"
         elif type_token.value == "string_type": type_token.value = "string"
         elif type_token.value == "char_type": type_token.value = "char"
@@ -78,54 +72,42 @@ class Parser:
         
         while self.current_token:
             node: Optional[Node] = None
-            # Store error count before attempting to parse a top-level item
-            # This helps in detecting if a sub-parser failed silently without advancing or reporting error
             errors_before_item = self.error_handler.get_error_count() 
 
             token_type = self.current_token.type
-            self._log_debug(f"Top-level, current token: {token_type} ('{self.current_token.value}')")
+            self._log_debug(f"Top-level, current token: {token_type} ('{self.current_token.value if self.current_token else ''}')")
 
             if token_type == 'IMPORT':
                 node = self.parse_import()
             elif token_type in ['VAR', 'CONST']:
                 node = self.parse_declaration()
             elif token_type == 'FUNC':
-                node = self.parse_function()
+                node = self.parse_function() # This now has better error recovery
             else:
-                # For global scripting: try to parse any other valid statement
-                # This includes assignments, prints, if, while, func_calls, etc.
-                # self._log_debug(f"Attempting to parse as top-level statement: {token_type}")
                 node = self.parse_statement() 
-                
                 if node is None and self.error_handler.get_error_count() == errors_before_item:
-                    # parse_statement returned None but did not report a new error.
-                    # This means the current token does not start any known statement.
-                    # It's an unexpected token at the top level.
                     self.error_handler.add_syntax_error(
                         f"Unexpected token or construct at top level: {self.current_token.type} ('{self.current_token.value}')",
                         self.current_token.lineno
                     )
-                    self.advance() # Advance to prevent infinite loop on this token
+                    self.advance() 
             
             if node:
                 top_level_nodes.append(node)
-                # self._log_debug(f"Added top-level node: {type(node).__name__}")
-            elif not self.current_token: # EOF reached
+            elif not self.current_token: 
                 break
-            # If node is None and errors *were* added, the loop continues, errors are already logged.
-
+        
         self._log_debug(f"--- Finished Program Parsing ({len(top_level_nodes)} nodes) ---")
         return Program(top_level_nodes)
 
     # --- Statement Parsers ---
     def parse_statement(self) -> Optional[Node]:
-        # self._log_debug(f"parse_statement, current: {self.current_token.type if self.current_token else 'None'}")
         node: Optional[Node] = None
         if not self.current_token: return None
 
         token_type = self.current_token.type
         
-        if token_type in ['VAR', 'CONST']: # Local declarations if inside a block, or global if parse() calls this
+        if token_type in ['VAR', 'CONST']: 
             node = self.parse_declaration()
         elif token_type == 'PRINT':
             node = self.parse_print()
@@ -139,69 +121,48 @@ class Parser:
             node = self.parse_control_statement('BREAK', Break)
         elif token_type == 'CONTINUE':
             node = self.parse_control_statement('CONTINUE', Continue)
-        elif token_type == 'ID': 
-            # Could be assignment `id = expr;` OR function call statement `id(args);`
-            # We need to look at the token *after* the potential function call part.
-            # A robust way: parse as primary. If it's FunctionCall and followed by SEMI, it's a statement.
-            # If it's Location and followed by ASSIGN, it's an assignment.
+        elif token_type == 'ID' or token_type == 'BACKTICK':
+            # This logic tries to parse an expression that could be an L-value or a function call.
+            # Then, based on what follows, it decides if it's an assignment or a standalone call statement.
+            start_pos = self.pos # Save state for potential backtrack if it's not an assignment
+            start_token_for_error = self.current_token
+
+            potential_target_or_call = self.parse_primary()
+
+            if isinstance(potential_target_or_call, (Location, MemoryAddress)) and self.match('ASSIGN'):
+                # It's an assignment: target = expr;
+                expr = self.parse_expression()
+                if not expr:
+                    if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0): # Check if parse_expression reported
+                        self.error_handler.add_syntax_error("Expected expression on the right-hand side of assignment.", 
+                                                      self.current_token.lineno if self.current_token else start_token_for_error.lineno)
+                    return None 
+                if not self.consume('SEMI', "Expected ';' after assignment statement"):
+                    return None 
+                node = Assignment(potential_target_or_call, expr, lineno=potential_target_or_call.lineno)
             
-            # Simpler predictive parsing: if ID is followed by LPAREN, assume func call statement for now.
-            # This is tricky because `a = myfunc(b) + c;` starts with `myfunc(b)` as part of expression.
-            # The distinction often relies on whether the result of parse_primary() is used in an assignment
-            # or stands alone followed by a semicolon.
-
-            # Let's try parsing a primary. This can be Location or FunctionCall
-            potential_lhs_or_call = self.parse_primary()
-
-            if isinstance(potential_lhs_or_call, FunctionCall): # e.g. my_func(args)
+            elif isinstance(potential_target_or_call, FunctionCall):
+                # It was a function call expression: func_call_expr ;
                 if self.consume('SEMI', "Expected ';' after function call statement"):
-                    node = potential_lhs_or_call # It was `my_func(args);`
-                # else: error already reported by consume.
-            elif isinstance(potential_lhs_or_call, (Location, MemoryAddress)): # e.g. x or `addr
-                # Now check if it's an assignment
-                if self.match('ASSIGN'):
-                    expr = self.parse_expression()
-                    if not expr: # Error in RHS
-                        if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                            self.error_handler.add_syntax_error("Expected expression on the right-hand side of assignment.", 
-                                                          self.current_token.lineno if self.current_token else potential_lhs_or_call.lineno)
-                        return None # Error in RHS parsing
-                    if not self.consume('SEMI', "Expected ';' after assignment statement"):
-                        return None # Error reported by consume
-                    node = Assignment(potential_lhs_or_call, expr, lineno=potential_lhs_or_call.lineno)
-                else: # It was just an ID or `expr not followed by = or ; (if calls are handled above)
-                      # This path might be an error if expressions alone cannot be statements (unless it was a call already handled)
-                    self.error_handler.add_syntax_error(
-                        f"Unexpected token '{self.current_token.value if self.current_token else ''}' after identifier/memory access. Expected '=' for assignment or was not a standalone statement.",
-                        potential_lhs_or_call.lineno
-                    )
-            elif potential_lhs_or_call is None: # Error in parse_primary
-                pass # Error already reported
-            else: # parse_primary returned something else not assignable and not a call
+                    node = potential_target_or_call
+                # else error reported by consume
+            
+            elif potential_target_or_call: # It was some other primary expression not forming a valid statement
                 self.error_handler.add_syntax_error(
-                    f"Invalid start of a statement. Expression of type {type(potential_lhs_or_call).__name__} cannot stand alone here.",
-                    potential_lhs_or_call.lineno
+                    f"Expression of type '{type(potential_target_or_call).__name__}' starting with '{start_token_for_error.value}' cannot stand alone as a statement here. Expected assignment or function call.",
+                    start_token_for_error.lineno
                 )
+                # No need to reset pos, parse_primary consumed tokens.
+                # If a SEMI follows, consume it to help parser move on.
+                if self.current_token and self.current_token.type == 'SEMI':
+                    self.advance()
 
-        elif token_type == 'BACKTICK': # Assignment to memory: `expr = ...
-            # This is now handled by the ID case if parse_primary parses `expr as MemoryAddress
-            # And then the assignment logic takes over.
-            # If parse_primary doesn't handle `expr directly, then parse_assignment is needed.
-            # Given current parse_primary, this direct BACKTICK case might be redundant here.
-            # Let's assume BACKTICK is handled by parse_primary for L-Values.
-            # If it's `addr = val;`, parse_primary gets `addr, then it's an assignment.
-            node = self.parse_assignment() # This will call parse_primary for the target.
-
-        # If node is still None and no error reported by specific parsers above,
-        # it means the token_type doesn't start any known statement.
-        # This should be caught by the caller (parse() or parse_statements_block)
-        # or we can report it here if this function is meant to be exhaustive.
-        # For now, let it return None if no statement matched.
-
+            # If potential_target_or_call is None, parse_primary already reported an error.
+        # else: Token does not start a known statement. Will be handled by caller if it's unexpected there.
+        
         return node
 
     def parse_statements_block(self) -> List[Node]:
-        # self._log_debug("parse_statements_block")
         statements: List[Node] = []
         if not self.consume('LBRACE', "Expected '{' to start block"):
             return [] 
@@ -211,20 +172,17 @@ class Parser:
             stmt = self.parse_statement()
             if stmt:
                 statements.append(stmt)
-            elif self.current_token and self.current_token.type != 'RBRACE':
-                if self.error_handler.get_error_count() == errors_before_stmt:
-                    # parse_statement failed to parse AND didn't log an error.
-                    # This means current token is truly unexpected for any statement.
+            elif self.current_token and self.current_token.type != 'RBRACE': # Error occurred or unhandled token
+                if self.error_handler.get_error_count() == errors_before_stmt: # No new error, so current token is the problem
                     self.error_handler.add_syntax_error(
                         f"Unexpected token '{self.current_token.value}' inside block.", 
                         self.current_token.lineno
                     )
-                # Always advance if parse_statement failed, to avoid infinite loop on the problematic token.
-                self.advance() 
-            elif not self.current_token: # EOF before RBRACE
-                break # Error will be caught by consume RBRACE
+                self.advance() # Advance to try to recover from the problematic token
+            elif not self.current_token: 
+                break 
         
-        self.consume('RBRACE', "Expected '}' to end block") # Reports error if missing
+        self.consume('RBRACE', "Expected '}' to end block")
         return statements
 
     def parse_control_statement(self, keyword: str, node_class: type) -> Optional[Node]:
@@ -234,19 +192,21 @@ class Parser:
             return None
         return node_class(lineno=start_token.lineno)
 
-    # --- Expression Parsers (Precedence: LogicalOR -> ... -> Primary) ---
+    # --- Expression Parsers ---
+    # (parse_expression down to parse_primary remain largely the same as your last correct version)
+    # Ensure they correctly handle operator precedence and associativity.
     def parse_expression(self) -> Optional[Node]:
         return self.parse_logical_or()
 
-    def parse_logical_or(self) -> Optional[Node]:
+    def parse_logical_or(self) -> Optional[Node]: # Lowest precedence
         node = self.parse_logical_and()
         while node and self.current_token and self.current_token.type == 'LOR':
-            op_token = self.current_token # Save before advancing
+            op_token = self.current_token 
             self.advance()
             right = self.parse_logical_and()
             if not right:
                 self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno)
-                return None
+                return None 
             node = LogicalOp(op_token.value, node, right, lineno=op_token.lineno)
         return node
 
@@ -314,7 +274,6 @@ class Parser:
         if op_token := self.match('PLUS', 'MINUS', 'NOT'):
             operand = self.parse_unary() 
             if not operand:
-                # Error already reported if operand parsing failed. If not, means missing operand.
                 if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
                     self.error_handler.add_syntax_error(f"Expected operand after unary operator '{op_token.value}'", op_token.lineno)
                 return None
@@ -326,7 +285,6 @@ class Parser:
                     self.error_handler.add_syntax_error(f"Expected size expression after memory allocation operator '{op_token.value}'", op_token.lineno)
                 return None
             return MemoryAllocation(size_expr, lineno=op_token.lineno)
-        
         return self.parse_primary()
 
     def parse_primary(self) -> Optional[Node]:
@@ -336,18 +294,16 @@ class Parser:
 
         if lit_token := self.match('INTEGER', 'FLOAT', 'STRING', 'CHAR', 'TRUE', 'FALSE'):
             node = self.create_literal_node(lit_token)
-        elif self.match('LPAREN'):
-            expr_start_line = self.tokens[self.pos-1].lineno # Line of LPAREN
+        elif lparen_token := self.match('LPAREN'):
             expr = self.parse_expression()
-            if not expr: # Error should be reported by parse_expression
-                # If not, means ( ) which is an error
+            if not expr: 
                 if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                     self.error_handler.add_syntax_error("Empty parentheses in expression.", expr_start_line)
+                     self.error_handler.add_syntax_error("Empty or invalid parenthesized expression.", lparen_token.lineno)
                 return None
             if not self.consume('RPAREN', "Expected ')' after parenthesized expression"):
                 return None
             node = expr
-        elif backtick_token := self.match('BACKTICK'): # `expr
+        elif backtick_token := self.match('BACKTICK'): 
             address_expression = self.parse_expression() 
             if not address_expression:
                 if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
@@ -355,18 +311,18 @@ class Parser:
                 return None
             node = MemoryAddress(address_expression, lineno=backtick_token.lineno)
         elif id_token := self.match('ID'):
-            if self.current_token and self.current_token.type == 'LPAREN': # Function call as expression
-                self.advance() # Consume LPAREN
+            if self.current_token and self.current_token.type == 'LPAREN': 
+                self.advance() 
                 args: List[Node] = []
-                if not self.match('RPAREN'): # If not empty arg list
+                if not self.match('RPAREN'): 
                     while True:
                         arg = self.parse_expression()
                         if not arg: return None 
                         args.append(arg)
-                        if not self.match('COMMA'): break # No comma, end of args
+                        if not self.match('COMMA'): break 
                     if not self.consume('RPAREN', "Expected ')' or ',' after function argument"): return None
                 node = FunctionCall(id_token.value, args, lineno=id_token.lineno)
-            else: # Variable Location
+            else: 
                 node = Location(id_token.value, lineno=id_token.lineno)
         elif self.current_token and self.current_token.type in ['INT', 'FLOAT_TYPE', 'BOOL', 'STRING_TYPE', 'CHAR_TYPE']:
             type_keyword_token = self.consume_type("Expected type keyword for cast") 
@@ -381,10 +337,9 @@ class Parser:
             node = TypeCast(type_keyword_token.value, expr_to_cast, lineno=type_keyword_token.lineno)
         else:
             # This token does not start a primary expression.
-            # This case should ideally be caught by the caller if it expects a primary expression.
-            # If parse_primary is called and this hits, it's an error *at this point*.
-            self.error_handler.add_syntax_error(f"Unexpected token, cannot form primary expression: {token.type} ('{token.value}')", token.lineno)
-            self.advance() # Skip to try to recover, though recovery from expression errors is hard.
+            # Let the caller (e.g., parse_statement or a higher-level expression parser) decide if it's an error.
+            # Returning None here indicates failure to parse a primary.
+            pass 
         return node
 
     def create_literal_node(self, token: Token) -> Node:
@@ -426,12 +381,11 @@ class Parser:
             self.error_handler.add_syntax_error(f"Variable '{name_token.value}' must have an explicit type or an initial value.", name_token.lineno)
             return None
 
-        if not self.consume('SEMI', "Expected ';' after declaration"):
-            return None
+        if not self.consume('SEMI', "Expected ';' after declaration"): return None
 
         if is_const:
-            inferred_type_for_const = None # Semantic analyzer will fill this properly
-            if value: # Basic inference for AST node if it's a simple literal
+            inferred_type_for_const = None 
+            if value: 
                 if isinstance(value, Integer): inferred_type_for_const = 'int'
                 elif isinstance(value, Float): inferred_type_for_const = 'float'
                 elif isinstance(value, String): inferred_type_for_const = 'string'
@@ -448,28 +402,50 @@ class Parser:
         name_token = self.consume('ID', "Expected function name")
         if not name_token: return None
 
-        if not self.consume('LPAREN', "Expected '(' after function name"):
-            return None
+        if not self.consume('LPAREN', "Expected '(' after function name"): return None
 
         params: List[Parameter] = []
-        if not self.match('RPAREN'): 
-            while True:
+        # Parameter parsing loop: `(param1 type1, param2 type2, ...)` or `()`
+        if not self.match('RPAREN'): # If not an immediate RPAREN, there are parameters
+            while True: # Loop for each parameter
                 param_name_token = self.consume('ID', "Expected parameter name")
-                if not param_name_token: return None
+                if not param_name_token:
+                    self._synchronize_to_RBRACE_or_EOF() # Attempt to recover
+                    return None 
                 
                 param_type_token = self.consume_type("Expected parameter type")
-                if not param_type_token: return None
+                if not param_type_token:
+                    self._synchronize_to_RBRACE_or_EOF()
+                    return None
                 
                 params.append(Parameter(param_name_token.value, param_type_token.value, lineno=param_name_token.lineno))
-                if not self.match('COMMA'): break 
+                
+                if not self.match('COMMA'): # No comma, so this should be the last parameter
+                    break 
+            # After loop, expect RPAREN
             if not self.consume('RPAREN', "Expected ')' or ',' after parameter"):
-                 return None
+                self._synchronize_to_RBRACE_or_EOF()
+                return None
+        # If it was an immediate RPAREN, params list remains empty, which is correct.
         
         return_gox_type_token = self.consume_type("Expected return type for function")
-        if not return_gox_type_token: return None
+        if not return_gox_type_token:
+            self._synchronize_to_RBRACE_or_EOF()
+            return None
         
         body_statements = self.parse_statements_block() 
+        # parse_statements_block handles LBRACE and RBRACE consumption for the block.
+        # If it returns [], it means the block was malformed (e.g. missing '{') or empty.
+
         return FunctionDecl(name_token.value, params, return_gox_type_token.value, body_statements, lineno=func_token.lineno)
+
+    def _synchronize_to_RBRACE_or_EOF(self):
+        """Advance tokens until an RBRACE or EOF is found, for error recovery."""
+        self._log_debug("Synchronizing: skipping tokens until '}' or EOF...")
+        while self.current_token and self.current_token.type != 'RBRACE':
+            self.advance()
+        if self.current_token and self.current_token.type == 'RBRACE':
+             self.advance() # Consume the RBRACE to clean up
 
     def parse_import(self) -> Optional[Node]:
         import_token = self.match('IMPORT')
@@ -538,23 +514,21 @@ class Parser:
         return While(condition, body_statements, lineno=while_token.lineno)
 
     def parse_assignment(self) -> Optional[Node]:
-        # This is called when parse_statement has determined it's likely an assignment
-        # (e.g., started with ID not followed by LPAREN, or started with BACKTICK)
-        # The target (ID or `expr) should be parsed by parse_primary first
+        # This method is now primarily called when parse_statement identifies an assignment context
+        # (e.g., after parsing a Location/MemoryAddress and seeing an '=').
+        # However, it can also be called directly if BACKTICK starts the statement.
+        
         start_lineno = self.current_token.lineno if self.current_token else -1
         
-        # We re-parse primary here to get the target. This might seem redundant
-        # if parse_statement already did, but it simplifies parse_statement's logic.
-        # Alternatively, parse_statement could pass the potential_lhs node.
-        # For now, keep it simple:
+        # The target (LHS) should have been parsed by parse_primary if called from parse_statement
+        # If called directly (e.g. for BACKTICK), parse_primary gets the target.
         target = self.parse_primary()
         
         if not target or not isinstance(target, (Location, MemoryAddress)):
             if target: 
                  self.error_handler.add_syntax_error(f"Invalid target for assignment. Expected variable or memory location, got {type(target).__name__}", start_lineno)
-            # else: parse_primary should have reported if it returned None without error
             elif not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                self.error_handler.add_syntax_error(f"Invalid or missing target for assignment.", start_lineno)
+                 self.error_handler.add_syntax_error(f"Invalid or missing target for assignment.", start_lineno)
             return None
 
         if not self.consume('ASSIGN', "Expected '=' after assignment target"): return None
@@ -584,6 +558,7 @@ class Parser:
         if not self.consume('SEMI', "Expected ';' after return statement"): return None
         return Return(expr, lineno=return_token.lineno) 
 
+# --- Main function for Parser (driver) ---
 def main():
     from Lexer import tokenize 
     from Error import ErrorHandler 
@@ -616,20 +591,21 @@ def main():
 
     print(f"\nParsing {source_file}...")
     parser = Parser(tokens, error_handler)
+    # parser.debug_mode = True # Enable debug prints for parser
     ast_program_node = parser.parse() 
 
     if error_handler.has_errors():
         print("\nParsing errors found:")
         error_handler.report_errors()
-        if ast_program_node: # Try to output partial AST if any
+        if ast_program_node: 
             print("\nAttempting to output partial AST (due to parsing errors)...")
             try:
                 ast_data_for_json = ast_to_json(ast_program_node)
                 error_output_file = output_file.replace('.ast.json', '.ast_errors.json')
                 save_ast_to_json(ast_data_for_json, error_output_file)
-                # pretty_print_json(ast_data_for_json)
+                pretty_print_json(ast_data_for_json)
             except Exception as e:
-                print(f"Could not serialize partial AST due to: {e}")
+                print(f"Could not serialize/print partial AST due to: {e}")
         sys.exit(1)
 
     if ast_program_node:

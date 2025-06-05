@@ -1,6 +1,6 @@
 # Parser.py
 import sys
-from typing import List, Optional, Union, Callable 
+from typing import List, Optional
 from Lexer import Token
 from Nodes_AST import * 
 from Error import ErrorHandler

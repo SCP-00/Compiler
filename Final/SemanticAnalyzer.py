@@ -322,10 +322,11 @@ class SemanticAnalyzer:
             
     def visit_If(self, node: If) -> None:
         condition_gox_type = self.analyze(node.test)
-        if condition_gox_type != 'bool':
+        # Solo reportar error de tipo de condición si la condición en sí no tuvo errores y no es bool
+        if condition_gox_type is not None and condition_gox_type != 'bool':
             self.error_handler.add_semantic_error(
                 f"If statement condition must be boolean, got '{condition_gox_type}'.",
-                node.test.lineno if node.test else node.lineno
+                node.test.lineno if node.test and hasattr(node.test, 'lineno') else node.lineno
             )
         
         self.enter_scope("if_consequence")
@@ -342,10 +343,11 @@ class SemanticAnalyzer:
 
     def visit_While(self, node: While) -> None:
         condition_gox_type = self.analyze(node.test)
-        if condition_gox_type != 'bool':
+        # Solo reportar error de tipo de condición si la condición en sí no tuvo errores y no es bool
+        if condition_gox_type is not None and condition_gox_type != 'bool':
             self.error_handler.add_semantic_error(
                 f"While loop condition must be boolean, got '{condition_gox_type}'.",
-                node.test.lineno if node.test else node.lineno
+                node.test.lineno if node.test and hasattr(node.test, 'lineno') else node.lineno
             )
         
         self.loop_depth += 1
@@ -575,11 +577,10 @@ class SemanticAnalyzer:
 
 # --- Main execution for semantic analysis (example) ---
 def main():
-    import os # For file path manipulation
-    # Assume Lexer, Parser, AST_to_JSON are in the same directory or accessible
-    # from Lexer import tokenize
-    # from Parser import Parser
-    # from AST_to_JSON import ast_to_json, save_ast_to_json, pretty_print_json
+    import os 
+    from Lexer import tokenize
+    from Parser import Parser 
+    from AST_to_JSON import ast_to_json, save_ast_to_json
 
     if len(sys.argv) != 2:
         print("Usage: python SemanticAnalyzer.py <file.gox>")
@@ -587,43 +588,28 @@ def main():
 
     file_path = sys.argv[1]
     if not os.path.exists(file_path):
-        print(f"Error: File not found: {file_path}")
-        sys.exit(1)
-
+        print(f"Error: File not found: {file_path}"); sys.exit(1)
     if not file_path.endswith('.gox'):
-        print(f"Error: File must have .gox extension: {file_path}")
-        sys.exit(1)
+        print(f"Error: File must have .gox extension: {file_path}"); sys.exit(1)
 
     try:
-        with open(file_path, 'r', encoding='utf-8') as file:
-            content = file.read()
-    except Exception as e:
-        print(f"Error reading file: {str(e)}")
-        sys.exit(1)
+        with open(file_path, 'r', encoding='utf-8') as file: content = file.read()
+    except Exception as e: print(f"Error reading file: {str(e)}"); sys.exit(1)
 
     print(f"\n--- Analyzing: {file_path} ---")
-
     error_handler = ErrorHandler()
     
-    # 1. Lexical Analysis
+    print("1. Lexical Analysis...")
     tokens = tokenize(content, error_handler)
-    if error_handler.has_errors():
-        print("\nLEXICAL ERRORS:")
-        error_handler.report_errors()
-        sys.exit(1)
-    print("Lexical analysis successful.")
+    if error_handler.has_errors(): print("\nLEXICAL ERRORS:"); error_handler.report_errors(); sys.exit(1)
+    print("   Lexical analysis successful.")
 
-    # 2. Syntactic Analysis (Parsing)
+    print("2. Parsing...")
     parser = Parser(tokens, error_handler)
     ast_root = parser.parse()
-    if error_handler.has_errors():
-        print("\nSYNTAX ERRORS:")
-        error_handler.report_errors()
-        sys.exit(1)
-    if not ast_root:
-        print("Parser returned no AST root, but no errors reported. Exiting.")
-        sys.exit(1)
-    print("Syntactic analysis successful. AST generated.")
+    if error_handler.has_errors(): print("\nSYNTAX ERRORS:"); error_handler.report_errors(); sys.exit(1)
+    if not ast_root: print("Parser returned no AST root. Exiting."); sys.exit(1)
+    print("   Parsing successful. AST generated.")
 
     # Save initial AST (before semantic analysis)
     base_name = os.path.splitext(file_path)[0]
@@ -632,39 +618,26 @@ def main():
     print(f"Raw AST (pre-semantics) saved to: {ast_raw_file}")
 
 
-    # 3. Semantic Analysis
-    print("\nPerforming semantic analysis...")
+    print("3. Semantic Analysis...")
     semantic_analyzer = SemanticAnalyzer(error_handler)
-    semantic_analyzer.analyze(ast_root) # This will modify ast_root in-place by setting gox_type, semantic_info
+    semantic_analyzer.analyze(ast_root) # This modifies ast_root in-place
+
 
     if error_handler.has_errors():
         print("\nSEMANTIC ERRORS:")
         error_handler.report_errors()
-        # Optionally print/save the partially analyzed AST for debugging
-        ast_sem_file_err = f"{base_name}.ast_semantic_errors.json"
-        save_ast_to_json(ast_to_json(ast_root), ast_sem_file_err)
-        print(f"AST (with semantic errors) saved to: {ast_sem_file_err}")
-        sys.exit(1)
+        sys.exit(1) # Exit if semantic errors are found
     
-    print("Semantic analysis successful.")
-
-    # Save semantically analyzed and enriched AST
-    ast_semantic_file = f"{base_name}.ast_semantic.json"
-    save_ast_to_json(ast_to_json(ast_root), ast_semantic_file)
-    print(f"Semantically analyzed AST saved to: {ast_semantic_file}")
-
-    # Print the symbol table hierarchy
-    print("\n--- Symbol Table Hierarchy ---")
+    print("   Semantic analysis successful.")
+    print("\n--- Symbol Table Hierarchy (Post-Analysis) ---")
     semantic_analyzer.global_scope.print_table()
-
     print(f"\n--- Analysis complete for {file_path} ---")
 
 if __name__ == "__main__":
-    # For standalone execution, ensure imports can be resolved
-    # This might require adjusting PYTHONPATH or how modules are imported
-    # if they are in different directories without being a proper package.
-    # Assuming Lexer, Parser, AST_to_JSON are in the same directory:
     from Lexer import tokenize
     from Parser import Parser 
     from AST_to_JSON import ast_to_json, save_ast_to_json
+    # Asegúrate que SymbolTable se importe correctamente si está en Sym_tab.py
+    from SymbolTable import SymbolTable, SymbolEntry
+    from Types import gox_typenames, check_binop_type, check_unaryop_type
     main()

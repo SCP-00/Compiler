@@ -634,10 +634,6 @@ def main():
     print(f"\n--- Analysis complete for {file_path} ---")
 
 if __name__ == "__main__":
-    from Lexer import tokenize
-    from Parser import Parser 
-    from AST_to_JSON import ast_to_json, save_ast_to_json
-    # Asegúrate que SymbolTable se importe correctamente si está en Sym_tab.py
     from SymbolTable import SymbolTable, SymbolEntry
     from Types import gox_typenames, check_binop_type, check_unaryop_type
     main()

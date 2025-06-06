@@ -1,9 +1,9 @@
 # SemanticAnalyzer.py
 
 import sys
-from typing import Optional, List, Any, Union
+from typing import Optional
 from Nodes_AST import * # Import all AST node types
-from Error import ErrorHandler, ErrorType
+from Error import ErrorHandler
 from SymbolTable import SymbolTable, SymbolEntry # Use the revised SymbolTable
 from Types import gox_typenames, check_binop_type, check_unaryop_type # Use the revised Types
 
@@ -634,6 +634,7 @@ def main():
     print(f"\n--- Analysis complete for {file_path} ---")
 
 if __name__ == "__main__":
+    # Asegúrate que SymbolTable se importe correctamente si está en Sym_tab.py
     from SymbolTable import SymbolTable, SymbolEntry
     from Types import gox_typenames, check_binop_type, check_unaryop_type
     main()

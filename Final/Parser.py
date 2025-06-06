@@ -43,16 +43,20 @@ class Parser:
         return None
     
     def consume_type(self, error_message_prefix: str) -> Optional[Token]:
-        type_token = self.match('INT', 'FLOAT_TYPE', 'BOOL', 'STRING_TYPE', 'CHAR_TYPE')
+        # Added 'VOID' as a valid type keyword for return types, etc.
+        type_token = self.match('INT', 'FLOAT_TYPE', 'BOOL', 'STRING_TYPE', 'CHAR_TYPE', 'VOID')
         if not type_token:
             err_lineno = self.current_token.lineno if self.current_token else "End of file"
-            self.error_handler.add_syntax_error(f"{error_message_prefix} (e.g., int, float, bool, string, char)", err_lineno)
+            # Check if the current token is an ID that might be an unknown type like 'real'
+            current_type_val = f"'{self.current_token.value}'" if self.current_token else "end of file"
+            self.error_handler.add_syntax_error(f"{error_message_prefix} (e.g., int, float, bool, string, char, void), got {current_type_val}", err_lineno)
             return None
         
         # Normalize type value for AST
         if type_token.value == "float_type": type_token.value = "float"
         elif type_token.value == "string_type": type_token.value = "string"
         elif type_token.value == "char_type": type_token.value = "char"
+        # 'int', 'bool', 'void' are already fine
         return type_token
 
     def _synchronize(self, recovery_tokens: List[str], stop_before: bool = True):
@@ -71,24 +75,43 @@ class Parser:
             self.advance()
 
     def _synchronize_past_block(self):
-        """Skips tokens until after the presumably matching RBRACE of a block."""
-        nesting_level = 0
-        if self.current_token and self.current_token.type == 'LBRACE':
-            nesting_level = 1 # Already saw one LBRACE if called after LBRACE error
-            self.advance()
+        """
+        Attempts to find an opening LBRACE from the current position (or soon after)
+        and skip until its matching RBRACE.
+        This is typically called when a construct like a function or block is malformed.
+        """
+        # Try to find the LBRACE of the block we intend to skip.
+        # Advance a few tokens if LBRACE is not immediate, in case of FUNC name ( params ) type {
+        skipped_initial_tokens = 0
+        max_initial_skip = 10 # Max tokens to look for LBRACE (e.g., func name (params) type)
 
+        while self.current_token and self.current_token.type != 'LBRACE' and skipped_initial_tokens < max_initial_skip:
+            # If we hit another major keyword or SEMI before finding LBRACE,
+            # it's possible the block was omitted or structure is very wrong.
+            if self.current_token.type in ['FUNC', 'VAR', 'CONST', 'IMPORT', 'SEMI', 'RBRACE', 'EOF']:
+                return # Give up finding LBRACE for this block, return.
+            self.advance()
+            skipped_initial_tokens += 1
+
+        if not self.current_token or self.current_token.type != 'LBRACE':
+            return # No LBRACE found or EOF.
+
+        # Now we are at an LBRACE (or should be), skip its content
+        self.advance() # Consume the LBRACE
+        nesting_level = 1
         while self.current_token:
             if self.current_token.type == 'LBRACE':
                 nesting_level += 1
             elif self.current_token.type == 'RBRACE':
                 nesting_level -= 1
-                if nesting_level <= 0: # Found the closing brace (or one too many)
-                    self.advance()
+                if nesting_level == 0: # Found the matching closing brace
+                    self.advance() # Consume the RBRACE
                     return
-            # Stop if we hit another top-level declaration keyword, to avoid consuming too much
-            elif self.current_token.type in ['FUNC', 'VAR', 'CONST', 'IMPORT'] and nesting_level <=0:
+            # Safety break: if nesting goes negative or hits EOF
+            elif nesting_level < 0 or self.current_token.type == 'EOF':
                 return
             self.advance()
+        return # Hit EOF while inside nested structure
 
     # --- Main Parsing Method ---
     def parse(self) -> Program: # Changed to always return a Program node, even if body is empty
@@ -130,7 +153,7 @@ class Parser:
     # --- Statement Parsers ---
     def parse_statement(self) -> Optional[Node]:
         node: Optional[Node] = None
-        if not self.current_token: return None
+        if not self.current_token or self.current_token.type == 'EOF': return None
 
         token_type = self.current_token.type
         
@@ -153,7 +176,8 @@ class Parser:
                 "Nested functions are not allowed.",
                 self.current_token.lineno
             )
-            self._synchronize_past_block() # Try to skip the entire malformed func k { ... }
+            self.advance() # <<< ADDED THIS LINE: Consume the 'FUNC' token itself
+            self._synchronize_past_block() # Try to skip the rest of the malformed func { ... }
             node = None # Indicate error, no valid statement node produced
         elif token_type == 'ID' or token_type == 'BACKTICK':
             start_token_for_error = self.current_token
@@ -186,25 +210,39 @@ class Parser:
     def parse_statements_block(self) -> List[Node]:
         statements: List[Node] = []
         if not self.consume('LBRACE', "Expected '{' to start block"):
-            # Attempt to synchronize if LBRACE is missing, look for common statement starters or RBRACE
-            # self._synchronize(['RBRACE', 'VAR', 'CONST', 'PRINT', 'IF', 'WHILE', 'ID', 'BACKTICK', 'RETURN', 'BREAK', 'CONTINUE'])
+            # If LBRACE is missing, we might be severely off track.
+            # Attempt to find a recovery point or the RBRACE.
+            # For now, returning empty list and error is reported by consume.
+            # A more advanced sync could look for statement starters or the RBRACE.
+            # self._synchronize(['RBRACE', 'VAR', 'CONST', 'PRINT', 'IF', 'WHILE', 'ID', 'BACKTICK', 'RETURN', 'BREAK', 'CONTINUE', 'FUNC'], stop_before=True)
             return [] 
         
-        while self.current_token and self.current_token.type != 'RBRACE':
+        while self.current_token and self.current_token.type != 'RBRACE' and self.current_token.type != 'EOF':
             errors_before_stmt = self.error_handler.get_error_count()
             stmt = self.parse_statement()
+
             if stmt:
                 statements.append(stmt)
-            elif self.current_token and self.current_token.type != 'RBRACE': 
-                if self.error_handler.get_error_count() == errors_before_stmt: 
+            else: # stmt is None
+                if not self.current_token or self.current_token.type == 'RBRACE' or self.current_token.type == 'EOF':
+                    break # Reached end of block or EOF
+
+                # If parse_statement returned None, it either reported an error and should have synchronized,
+                # or it didn't know how to handle the current token.
+                if self.error_handler.get_error_count() == errors_before_stmt:
+                    # parse_statement did not report an error, so this token is unexpected here.
                     self.error_handler.add_syntax_error(
-                        f"Unexpected token '{self.current_token.value}' inside block, cannot start a statement.", 
+                        f"Unexpected token '{self.current_token.value}' (type: {self.current_token.type}) inside block, cannot start a statement.",
                         self.current_token.lineno
                     )
-                self.advance() 
-            elif not self.current_token: break 
+                    self.advance() # Consume the problematic token to avoid infinite loop
+                # else: parse_statement reported an error and presumably synchronized.
+                # The token stream should be at a new position. Loop will continue.
         
-        self.consume('RBRACE', "Expected '}' to end block")
+        if not self.consume('RBRACE', "Expected '}' to end block"):
+            # If RBRACE is missing, error is reported by consume.
+            # We might be at EOF or another token.
+            pass # Statements gathered so far are returned.
         return statements
 
     def parse_control_statement(self, keyword: str, node_class: type) -> Optional[Node]:
@@ -367,40 +405,45 @@ class Parser:
         if not func_token: return None 
 
         name_token = self.consume('ID', "Expected function name")
-        if not name_token: self._synchronize_past_block(); return None # Try to skip entire func
+        if not name_token:
+            self._synchronize_past_block() # Try to skip what might have been the function
+            return None
 
         if not self.consume('LPAREN', "Expected '(' after function name"):
-            self._synchronize_past_block(); return None
+            self._synchronize_past_block()
+            return None
 
         params: List[Parameter] = []
         if not self.match('RPAREN'): 
             while True: 
-                # MODIFIED: Check for TYPE ID sequence for parameters (like C)
-                # This handles "func w(int x)" case.
-                # If GoX is strictly "name type", this part needs to revert to consume ID then consume_type.
-                # For now, let's assume "name type" is the GoX standard from `func f(x int, y int)`
                 param_name_token = self.consume('ID', "Expected parameter name")
-                if not param_name_token: self._synchronize_past_block(); return None 
+                if not param_name_token:
+                    self._synchronize_past_block() # Error in param name
+                    return None 
                 
                 param_type_token = self.consume_type("Expected parameter type")
-                if not param_type_token: self._synchronize_past_block(); return None
+                if not param_type_token:
+                    self._synchronize_past_block() # Error in param type
+                    return None
                 
                 params.append(Parameter(param_name_token.value, param_type_token.value, lineno=param_name_token.lineno))
                 
                 if not self.match('COMMA'): break 
             if not self.consume('RPAREN', "Expected ')' or ',' after parameter"):
-                 self._synchronize_past_block(); return None
+                 self._synchronize_past_block()
+                 return None
         
-        return_gox_type_token = self.consume_type("Expected return type for function")
+        return_gox_type_token = self.consume_type("Expected return type for function (e.g., int, float, bool, string, char, void)")
         if not return_gox_type_token:
-            self._synchronize_past_block(); return None
+            self._synchronize_past_block()
+            return None
         
-        # Body parsing needs LBRACE
         if not (self.current_token and self.current_token.type == 'LBRACE'):
             self.error_handler.add_syntax_error("Expected '{' to start function body.", 
-                                                self.current_token.lineno if self.current_token else name_token.lineno)
-            self._synchronize_past_block() # Try to skip what might have been the body
-            return FunctionDecl(name_token.value, params, return_gox_type_token.value, [], lineno=func_token.lineno) # Return with empty body
+                                                self.current_token.lineno if self.current_token else (return_gox_type_token.lineno if return_gox_type_token else name_token.lineno))
+            self._synchronize_past_block() 
+            # Return a FunctionDecl node with empty body to represent the parsed signature
+            return FunctionDecl(name_token.value, params, return_gox_type_token.value, [], lineno=func_token.lineno)
 
         body_statements = self.parse_statements_block() 
         return FunctionDecl(name_token.value, params, return_gox_type_token.value, body_statements, lineno=func_token.lineno)

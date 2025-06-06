@@ -525,7 +525,7 @@ def main():
         print("\nERRORS during IR loading into StackMachine:")
         error_handler.report_errors(); sys.exit(1)
     
-    vm.run(start_function_name="_init") # Execute from _init
+    vm.run(entry_function_name="_init") # Execute from _init
 
     if error_handler.has_errors():
         print("\n--- STACK MACHINE EXECUTION ERRORS ---")

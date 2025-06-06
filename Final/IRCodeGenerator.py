@@ -293,7 +293,7 @@ class IRCodeGenerator:
         ('float', '/', 'float'): 'DIVF',
         ('float', '<', 'float'): 'LTF', ('float', '<=', 'float'): 'LEF', ('float', '>', 'float'): 'GTF', 
         ('float', '>=', 'float'): 'GEF', ('float', '==', 'float'): 'EQF', ('float', '!=', 'float'): 'NEF',
-        ('bool', '&&', 'bool'): 'ANDI', ('bool', '||', 'bool'): 'ORI', # Logical ops on bools (0/1)
+        # Logical AND/OR are handled by visit_LogicalOp for short-circuiting
         ('bool', '==', 'bool'): 'EQI', ('bool', '!=', 'bool'): 'NEI',
         ('char', '<', 'char'): 'LTI', ('char', '<=', 'char'): 'LEI', ('char', '>', 'char'): 'GTI', 
         ('char', '>=', 'char'): 'GEI', ('char', '==', 'char'): 'EQI', ('char', '!=', 'char'): 'NEI',
@@ -305,27 +305,77 @@ class IRCodeGenerator:
     }
 
     def visit_BinOp(self, node: BinOp):
-        # For && and ||, IR needs conditional jumps for short-circuiting
-        # Example for 'A && B': eval A; IF_FALSE_JUMP label_false; eval B; label_false:
-        if node.op == '&&':
-            # This is a placeholder, proper short-circuiting needs labels and jumps
-            self.visit(node.left); self.visit(node.right)
-            self._emit('ANDI') # Simple non-short-circuiting AND for bools (0/1)
-            return
-        elif node.op == '||':
-            self.visit(node.left); self.visit(node.right)
-            self._emit('ORI') # Simple non-short-circuiting OR
-            return
-
+        # Handles arithmetic binary operations like +, -, *, /
         self.visit(node.left)
         self.visit(node.right)
+        
         # Semantic analysis should ensure types are compatible and set node.left.gox_type etc.
-        op_key = (node.left.gox_type, node.op, node.right.gox_type)
+        # Ensure gox_type attribute exists before accessing
+        left_gox_type = getattr(node.left, 'gox_type', None)
+        right_gox_type = getattr(node.right, 'gox_type', None)
+
+        if left_gox_type is None or right_gox_type is None:
+            self.error_handler.add_error(f"IR Gen: Type information missing for operands of BinOp '{node.op}'", node.lineno, error_type="INTERNAL")
+            return
+
+        op_key = (left_gox_type, node.op, right_gox_type)
         ir_opcode = self._ir_bin_opcodes.get(op_key)
+        
         if ir_opcode:
             self._emit(ir_opcode)
         else:
             self.error_handler.add_error(f"IR Gen: No IR for BinOp {op_key}", node.lineno)
+
+    def visit_CompareOp(self, node: CompareOp):
+        # Handles comparison operations like <, >, ==, !=, <=, >=
+        self.visit(node.left)
+        self.visit(node.right)
+
+        left_gox_type = getattr(node.left, 'gox_type', None)
+        right_gox_type = getattr(node.right, 'gox_type', None)
+
+        if left_gox_type is None or right_gox_type is None:
+            self.error_handler.add_error(f"IR Gen: Type information missing for operands of CompareOp '{node.op}'", node.lineno, error_type="INTERNAL")
+            return
+            
+        op_key = (left_gox_type, node.op, right_gox_type)
+        ir_opcode = self._ir_bin_opcodes.get(op_key)
+
+        if ir_opcode:
+            self._emit(ir_opcode)
+        else:
+            self.error_handler.add_error(f"IR Gen: No IR for CompareOp {op_key}", node.lineno)
+
+    def visit_LogicalOp(self, node: LogicalOp):
+        # Handles logical operations &&, || with short-circuiting
+        self.visit(node.left) # Evaluate left operand, result (0 or 1) is on stack
+        
+        if node.op == '&&':
+            # A && B:
+            # if A is true (1), result is B's value (0 or 1)
+            # if A is false (0), result is false (0)
+            self._emit('IF')       # Consumes A. If A is true (non-zero), executes 'then' block
+            # 'Then' block (A was true)
+            self.visit(node.right) # Evaluate B, its value (0 or 1) is the result of A && B
+            self._emit('ELSE')
+            # 'Else' block (A was false)
+            self._emit('CONSTI', 0) # Result is false (0)
+            self._emit('ENDIF')
+            # The result of the IF/ELSE/ENDIF (either B's value or 0) is left on the stack.
+        elif node.op == '||':
+            # A || B:
+            # if A is true (1), result is true (1)
+            # if A is false (0), result is B's value (0 or 1)
+            self._emit('IF')       # Consumes A. If A is true (non-zero), executes 'then' block
+            # 'Then' block (A was true)
+            self._emit('CONSTI', 1) # Result is true (1)
+            self._emit('ELSE')
+            # 'Else' block (A was false)
+            self.visit(node.right) # Evaluate B, its value (0 or 1) is the result of A || B
+            self._emit('ENDIF')
+            # The result of the IF/ELSE/ENDIF (either 1 or B's value) is left on the stack.
+        else:
+            self.error_handler.add_error(f"IR Gen: Unknown LogicalOp operator '{node.op}'", node.lineno)
 
     def visit_UnaryOp(self, node: UnaryOp):
         self.visit(node.operand)

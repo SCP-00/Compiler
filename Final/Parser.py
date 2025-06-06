@@ -1,10 +1,10 @@
 # Parser.py
 import sys
-from typing import List, Optional, Union, Callable 
+from typing import List, Optional
 from Lexer import Token
 from Nodes_AST import * 
 from Error import ErrorHandler
-# from AST_to_JSON import save_ast_to_json, ast_to_json, pretty_print_json # Not used by Parser class itself
+# No se usa AST_to_JSON directamente en la clase Parser
 
 class Parser:
     def __init__(self, tokens: List[Token], error_handler: ErrorHandler):
@@ -12,18 +12,7 @@ class Parser:
         self.error_handler: ErrorHandler = error_handler
         self.pos: int = 0
         self.current_token: Optional[Token] = self.tokens[0] if tokens else None
-        self.debug_mode: bool = False # Set to True for simple debug prints
-
-    def _log_debug(self, message: str):
-        if self.debug_mode:
-            depth = 0
-            try: # Calculate depth based on 'parse_' methods in call stack
-                depth = sum(1 for frame_info in sys._current_frames().values() 
-                            if frame_info.f_code.co_name.startswith('parse_'))
-            except Exception: # sys._current_frames might not be available or fail
-                pass
-            indent = "  " * depth
-            print(f"{indent}[Parser DEBUG] {message}")
+        # self.debug_mode: bool = False # Debugging can be added with print statements if needed
 
     def advance(self) -> None:
         self.pos += 1
@@ -60,14 +49,49 @@ class Parser:
             self.error_handler.add_syntax_error(f"{error_message_prefix} (e.g., int, float, bool, string, char)", err_lineno)
             return None
         
+        # Normalize type value for AST
         if type_token.value == "float_type": type_token.value = "float"
         elif type_token.value == "string_type": type_token.value = "string"
         elif type_token.value == "char_type": type_token.value = "char"
         return type_token
 
+    def _synchronize(self, recovery_tokens: List[str], stop_before: bool = True):
+        """
+        General error recovery: advance until a token in recovery_tokens or EOF.
+        If stop_before is True, stops *before* consuming the recovery token.
+        Otherwise, consumes it.
+        """
+        while self.current_token:
+            if self.current_token.type in recovery_tokens:
+                if stop_before:
+                    return
+                else:
+                    self.advance()
+                    return
+            self.advance()
+
+    def _synchronize_past_block(self):
+        """Skips tokens until after the presumably matching RBRACE of a block."""
+        nesting_level = 0
+        if self.current_token and self.current_token.type == 'LBRACE':
+            nesting_level = 1 # Already saw one LBRACE if called after LBRACE error
+            self.advance()
+
+        while self.current_token:
+            if self.current_token.type == 'LBRACE':
+                nesting_level += 1
+            elif self.current_token.type == 'RBRACE':
+                nesting_level -= 1
+                if nesting_level <= 0: # Found the closing brace (or one too many)
+                    self.advance()
+                    return
+            # Stop if we hit another top-level declaration keyword, to avoid consuming too much
+            elif self.current_token.type in ['FUNC', 'VAR', 'CONST', 'IMPORT'] and nesting_level <=0:
+                return
+            self.advance()
+
     # --- Main Parsing Method ---
-    def parse(self) -> Optional[Program]:
-        self._log_debug("--- Starting Program Parsing ---")
+    def parse(self) -> Program: # Changed to always return a Program node, even if body is empty
         top_level_nodes: List[Node] = []
         
         while self.current_token:
@@ -75,14 +99,13 @@ class Parser:
             errors_before_item = self.error_handler.get_error_count() 
 
             token_type = self.current_token.type
-            self._log_debug(f"Top-level, current token: {token_type} ('{self.current_token.value if self.current_token else ''}')")
 
             if token_type == 'IMPORT':
                 node = self.parse_import()
             elif token_type in ['VAR', 'CONST']:
                 node = self.parse_declaration()
             elif token_type == 'FUNC':
-                node = self.parse_function() # This now has better error recovery
+                node = self.parse_function() 
             else:
                 node = self.parse_statement() 
                 if node is None and self.error_handler.get_error_count() == errors_before_item:
@@ -90,14 +113,18 @@ class Parser:
                         f"Unexpected token or construct at top level: {self.current_token.type} ('{self.current_token.value}')",
                         self.current_token.lineno
                     )
-                    self.advance() 
+                    self.advance() # Advance to prevent infinite loop on this specific token
             
             if node:
                 top_level_nodes.append(node)
             elif not self.current_token: 
-                break
+                break # EOF
+            elif self.error_handler.get_error_count() > errors_before_item:
+                # An error was reported and sub-parser returned None. Attempt to synchronize.
+                self._synchronize(['FUNC', 'VAR', 'CONST', 'IMPORT', 'SEMI']) # Added SEMI for statement level recovery
+                if self.current_token and self.current_token.type == 'SEMI': # Consume SEMI if it's the recovery point
+                    self.advance()
         
-        self._log_debug(f"--- Finished Program Parsing ({len(top_level_nodes)} nodes) ---")
         return Program(top_level_nodes)
 
     # --- Statement Parsers ---
@@ -121,50 +148,46 @@ class Parser:
             node = self.parse_control_statement('BREAK', Break)
         elif token_type == 'CONTINUE':
             node = self.parse_control_statement('CONTINUE', Continue)
+        elif token_type == 'FUNC': # Detect nested function attempts
+            self.error_handler.add_syntax_error(
+                "Nested functions are not allowed.",
+                self.current_token.lineno
+            )
+            self._synchronize_past_block() # Try to skip the entire malformed func k { ... }
+            node = None # Indicate error, no valid statement node produced
         elif token_type == 'ID' or token_type == 'BACKTICK':
-            # This logic tries to parse an expression that could be an L-value or a function call.
-            # Then, based on what follows, it decides if it's an assignment or a standalone call statement.
-            start_pos = self.pos # Save state for potential backtrack if it's not an assignment
             start_token_for_error = self.current_token
+            potential_lhs_or_call = self.parse_primary()
 
-            potential_target_or_call = self.parse_primary()
-
-            if isinstance(potential_target_or_call, (Location, MemoryAddress)) and self.match('ASSIGN'):
-                # It's an assignment: target = expr;
-                expr = self.parse_expression()
-                if not expr:
-                    if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0): # Check if parse_expression reported
-                        self.error_handler.add_syntax_error("Expected expression on the right-hand side of assignment.", 
-                                                      self.current_token.lineno if self.current_token else start_token_for_error.lineno)
-                    return None 
-                if not self.consume('SEMI', "Expected ';' after assignment statement"):
-                    return None 
-                node = Assignment(potential_target_or_call, expr, lineno=potential_target_or_call.lineno)
-            
-            elif isinstance(potential_target_or_call, FunctionCall):
-                # It was a function call expression: func_call_expr ;
-                if self.consume('SEMI', "Expected ';' after function call statement"):
-                    node = potential_target_or_call
-                # else error reported by consume
-            
-            elif potential_target_or_call: # It was some other primary expression not forming a valid statement
+            if isinstance(potential_lhs_or_call, (Location, MemoryAddress)):
+                if self.match('ASSIGN'): 
+                    expr = self.parse_expression()
+                    if not expr: return None # Error in RHS should be reported by parse_expression
+                    if not self.consume('SEMI', "Expected ';' after assignment statement."): return None 
+                    node = Assignment(potential_lhs_or_call, expr, lineno=potential_lhs_or_call.lineno)
+                else: 
+                    self.error_handler.add_syntax_error(
+                        f"Identifier or memory access '{start_token_for_error.value}' not followed by '=' for assignment.",
+                        start_token_for_error.lineno
+                    ) # This might be part of a larger expression if not for statement context
+                      # If this function expects only full statements, this is an error.
+            elif isinstance(potential_lhs_or_call, FunctionCall):
+                if not self.consume('SEMI', "Expected ';' after function call statement."): return None 
+                node = potential_lhs_or_call
+            elif potential_lhs_or_call is None: pass # Error already reported by parse_primary
+            else: 
                 self.error_handler.add_syntax_error(
-                    f"Expression of type '{type(potential_target_or_call).__name__}' starting with '{start_token_for_error.value}' cannot stand alone as a statement here. Expected assignment or function call.",
-                    start_token_for_error.lineno
+                    f"Expression of type '{type(potential_lhs_or_call).__name__}' cannot stand alone as a statement.",
+                    potential_lhs_or_call.lineno
                 )
-                # No need to reset pos, parse_primary consumed tokens.
-                # If a SEMI follows, consume it to help parser move on.
-                if self.current_token and self.current_token.type == 'SEMI':
-                    self.advance()
-
-            # If potential_target_or_call is None, parse_primary already reported an error.
-        # else: Token does not start a known statement. Will be handled by caller if it's unexpected there.
-        
+        # If token_type doesn't match any, node remains None. Caller handles it.
         return node
 
     def parse_statements_block(self) -> List[Node]:
         statements: List[Node] = []
         if not self.consume('LBRACE', "Expected '{' to start block"):
+            # Attempt to synchronize if LBRACE is missing, look for common statement starters or RBRACE
+            # self._synchronize(['RBRACE', 'VAR', 'CONST', 'PRINT', 'IF', 'WHILE', 'ID', 'BACKTICK', 'RETURN', 'BREAK', 'CONTINUE'])
             return [] 
         
         while self.current_token and self.current_token.type != 'RBRACE':
@@ -172,15 +195,14 @@ class Parser:
             stmt = self.parse_statement()
             if stmt:
                 statements.append(stmt)
-            elif self.current_token and self.current_token.type != 'RBRACE': # Error occurred or unhandled token
-                if self.error_handler.get_error_count() == errors_before_stmt: # No new error, so current token is the problem
+            elif self.current_token and self.current_token.type != 'RBRACE': 
+                if self.error_handler.get_error_count() == errors_before_stmt: 
                     self.error_handler.add_syntax_error(
-                        f"Unexpected token '{self.current_token.value}' inside block.", 
+                        f"Unexpected token '{self.current_token.value}' inside block, cannot start a statement.", 
                         self.current_token.lineno
                     )
-                self.advance() # Advance to try to recover from the problematic token
-            elif not self.current_token: 
-                break 
+                self.advance() 
+            elif not self.current_token: break 
         
         self.consume('RBRACE', "Expected '}' to end block")
         return statements
@@ -189,126 +211,92 @@ class Parser:
         start_token = self.match(keyword)
         if not start_token: return None 
         if not self.consume('SEMI', f"Missing ';' after {keyword.lower()} statement"):
+            # No complex sync here, simple statement. Error already reported.
             return None
         return node_class(lineno=start_token.lineno)
 
-    # --- Expression Parsers ---
-    # (parse_expression down to parse_primary remain largely the same as your last correct version)
-    # Ensure they correctly handle operator precedence and associativity.
-    def parse_expression(self) -> Optional[Node]:
-        return self.parse_logical_or()
-
-    def parse_logical_or(self) -> Optional[Node]: # Lowest precedence
+    def parse_expression(self) -> Optional[Node]: return self.parse_logical_or()
+    def parse_logical_or(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
         node = self.parse_logical_and()
         while node and self.current_token and self.current_token.type == 'LOR':
             op_token = self.current_token 
             self.advance()
             right = self.parse_logical_and()
-            if not right:
-                self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno)
-                return None 
+            if not right: self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno); return None 
             node = LogicalOp(op_token.value, node, right, lineno=op_token.lineno)
         return node
-
-    def parse_logical_and(self) -> Optional[Node]:
+    def parse_logical_and(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
         node = self.parse_equality()
         while node and self.current_token and self.current_token.type == 'LAND':
             op_token = self.current_token
             self.advance()
             right = self.parse_equality()
-            if not right:
-                self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno)
-                return None
+            if not right: self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno); return None
             node = LogicalOp(op_token.value, node, right, lineno=op_token.lineno)
         return node
-
-    def parse_equality(self) -> Optional[Node]:
+    def parse_equality(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
         node = self.parse_relational()
         while node and self.current_token and self.current_token.type in ['EQ', 'NE']:
             op_token = self.current_token
             self.advance()
             right = self.parse_relational()
-            if not right:
-                self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno)
-                return None
+            if not right: self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno); return None
             node = CompareOp(op_token.value, node, right, lineno=op_token.lineno)
         return node
-        
-    def parse_relational(self) -> Optional[Node]:
+    def parse_relational(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
         node = self.parse_additive()
         while node and self.current_token and self.current_token.type in ['LT', 'GT', 'LE', 'GE']:
             op_token = self.current_token
             self.advance()
             right = self.parse_additive()
-            if not right:
-                self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno)
-                return None
+            if not right: self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno); return None
             node = CompareOp(op_token.value, node, right, lineno=op_token.lineno)
         return node
-
-    def parse_additive(self) -> Optional[Node]:
+    def parse_additive(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
         node = self.parse_multiplicative()
         while node and self.current_token and self.current_token.type in ['PLUS', 'MINUS']:
             op_token = self.current_token
             self.advance()
             right = self.parse_multiplicative()
-            if not right:
-                self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno)
-                return None
+            if not right: self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno); return None
             node = BinOp(op_token.value, node, right, lineno=op_token.lineno)
         return node
-
-    def parse_multiplicative(self) -> Optional[Node]:
+    def parse_multiplicative(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
         node = self.parse_unary()
         while node and self.current_token and self.current_token.type in ['TIMES', 'DIVIDE', 'MOD']:
             op_token = self.current_token
             self.advance()
             right = self.parse_unary()
-            if not right:
-                self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno)
-                return None
+            if not right: self.error_handler.add_syntax_error(f"Expected expression after '{op_token.value}'", op_token.lineno); return None
             node = BinOp(op_token.value, node, right, lineno=op_token.lineno)
         return node
-
-    def parse_unary(self) -> Optional[Node]:
+    def parse_unary(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
         if op_token := self.match('PLUS', 'MINUS', 'NOT'):
             operand = self.parse_unary() 
             if not operand:
-                if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                    self.error_handler.add_syntax_error(f"Expected operand after unary operator '{op_token.value}'", op_token.lineno)
+                # Do not add error here if sub-call already did, or if it's just end of tokens
                 return None
             return UnaryOp(op_token.value, operand, lineno=op_token.lineno)
-        elif op_token := self.match('MEM_ALLOC'): # ^expr
+        elif op_token := self.match('MEM_ALLOC'): 
             size_expr = self.parse_unary() 
             if not size_expr:
-                if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                    self.error_handler.add_syntax_error(f"Expected size expression after memory allocation operator '{op_token.value}'", op_token.lineno)
+                self.error_handler.add_syntax_error(f"Expected size expression after memory allocation operator '{op_token.value}'", op_token.lineno)
                 return None
             return MemoryAllocation(size_expr, lineno=op_token.lineno)
         return self.parse_primary()
-
-    def parse_primary(self) -> Optional[Node]:
-        token = self.current_token
-        node: Optional[Node] = None
+    def parse_primary(self) -> Optional[Node]: # ... (same as before, ensure error propagation)
+        token = self.current_token; node: Optional[Node] = None
         if not token: return None
-
         if lit_token := self.match('INTEGER', 'FLOAT', 'STRING', 'CHAR', 'TRUE', 'FALSE'):
             node = self.create_literal_node(lit_token)
         elif lparen_token := self.match('LPAREN'):
             expr = self.parse_expression()
-            if not expr: 
-                if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                     self.error_handler.add_syntax_error("Empty or invalid parenthesized expression.", lparen_token.lineno)
-                return None
-            if not self.consume('RPAREN', "Expected ')' after parenthesized expression"):
-                return None
+            if not expr: return None
+            if not self.consume('RPAREN', "Expected ')' after parenthesized expression"): return None
             node = expr
         elif backtick_token := self.match('BACKTICK'): 
             address_expression = self.parse_expression() 
-            if not address_expression:
-                if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                    self.error_handler.add_syntax_error("Expected address expression after '`'", backtick_token.lineno)
-                return None
+            if not address_expression: return None
             node = MemoryAddress(address_expression, lineno=backtick_token.lineno)
         elif id_token := self.match('ID'):
             if self.current_token and self.current_token.type == 'LPAREN': 
@@ -322,27 +310,19 @@ class Parser:
                         if not self.match('COMMA'): break 
                     if not self.consume('RPAREN', "Expected ')' or ',' after function argument"): return None
                 node = FunctionCall(id_token.value, args, lineno=id_token.lineno)
-            else: 
-                node = Location(id_token.value, lineno=id_token.lineno)
+            else: node = Location(id_token.value, lineno=id_token.lineno)
         elif self.current_token and self.current_token.type in ['INT', 'FLOAT_TYPE', 'BOOL', 'STRING_TYPE', 'CHAR_TYPE']:
             type_keyword_token = self.consume_type("Expected type keyword for cast") 
             if not type_keyword_token: return None
             if not self.consume('LPAREN', f"Expected '(' after type '{type_keyword_token.value}' for cast"): return None
             expr_to_cast = self.parse_expression()
-            if not expr_to_cast:
-                if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                    self.error_handler.add_syntax_error(f"Expected expression inside cast to '{type_keyword_token.value}'", type_keyword_token.lineno)
-                return None
+            if not expr_to_cast: return None
             if not self.consume('RPAREN', f"Expected ')' after cast to '{type_keyword_token.value}'"): return None
             node = TypeCast(type_keyword_token.value, expr_to_cast, lineno=type_keyword_token.lineno)
-        else:
-            # This token does not start a primary expression.
-            # Let the caller (e.g., parse_statement or a higher-level expression parser) decide if it's an error.
-            # Returning None here indicates failure to parse a primary.
-            pass 
+        # else: If no primary matches, return None. Caller will decide if it's an error.
         return node
 
-    def create_literal_node(self, token: Token) -> Node:
+    def create_literal_node(self, token: Token) -> Node: # ... (remains same)
         if token.type == 'INTEGER': return Integer(int(token.value), lineno=token.lineno)
         if token.type == 'FLOAT': return Float(float(token.value), lineno=token.lineno)
         if token.type == 'STRING': return String(token.value, lineno=token.lineno) 
@@ -351,38 +331,25 @@ class Parser:
         if token.type == 'FALSE': return Boolean(False, lineno=token.lineno)
         raise ValueError(f"Internal error: create_literal_node called with non-literal token {token.type}")
 
-    def parse_declaration(self) -> Optional[Node]:
+    def parse_declaration(self) -> Optional[Node]: # ... (remains same)
         is_const = True if self.current_token and self.current_token.type == 'CONST' else False
         decl_keyword_token = self.match('VAR', 'CONST')
         if not decl_keyword_token: return None
-
         name_token = self.consume('ID', "Expected identifier after 'var' or 'const'")
         if not name_token: return None
-
         type_spec: Optional[str] = None
         if not is_const and self.current_token and self.current_token.type in ['INT', 'FLOAT_TYPE', 'BOOL', 'STRING_TYPE', 'CHAR_TYPE']:
             type_spec_token = self.consume_type("Expected type specifier for variable")
             if type_spec_token: type_spec = type_spec_token.value 
-
         value: Optional[Node] = None
         if self.match('ASSIGN'):
             value = self.parse_expression()
-            if not value:
-                if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                    self.error_handler.add_syntax_error("Expected expression for initialization", 
-                                                  self.current_token.lineno if self.current_token else name_token.lineno)
-                return None
-        
+            if not value: return None
         if is_const and value is None:
-            self.error_handler.add_syntax_error(f"Constant '{name_token.value}' must be initialized.", name_token.lineno)
-            return None
-        
+            self.error_handler.add_syntax_error(f"Constant '{name_token.value}' must be initialized.", name_token.lineno); return None
         if not is_const and type_spec is None and value is None:
-            self.error_handler.add_syntax_error(f"Variable '{name_token.value}' must have an explicit type or an initial value.", name_token.lineno)
-            return None
-
+            self.error_handler.add_syntax_error(f"Variable '{name_token.value}' must have an explicit type or an initial value.", name_token.lineno); return None
         if not self.consume('SEMI', "Expected ';' after declaration"): return None
-
         if is_const:
             inferred_type_for_const = None 
             if value: 
@@ -400,57 +367,47 @@ class Parser:
         if not func_token: return None 
 
         name_token = self.consume('ID', "Expected function name")
-        if not name_token: return None
+        if not name_token: self._synchronize_past_block(); return None # Try to skip entire func
 
-        if not self.consume('LPAREN', "Expected '(' after function name"): return None
+        if not self.consume('LPAREN', "Expected '(' after function name"):
+            self._synchronize_past_block(); return None
 
         params: List[Parameter] = []
-        # Parameter parsing loop: `(param1 type1, param2 type2, ...)` or `()`
-        if not self.match('RPAREN'): # If not an immediate RPAREN, there are parameters
-            while True: # Loop for each parameter
+        if not self.match('RPAREN'): 
+            while True: 
+                # MODIFIED: Check for TYPE ID sequence for parameters (like C)
+                # This handles "func w(int x)" case.
+                # If GoX is strictly "name type", this part needs to revert to consume ID then consume_type.
+                # For now, let's assume "name type" is the GoX standard from `func f(x int, y int)`
                 param_name_token = self.consume('ID', "Expected parameter name")
-                if not param_name_token:
-                    self._synchronize_to_RBRACE_or_EOF() # Attempt to recover
-                    return None 
+                if not param_name_token: self._synchronize_past_block(); return None 
                 
                 param_type_token = self.consume_type("Expected parameter type")
-                if not param_type_token:
-                    self._synchronize_to_RBRACE_or_EOF()
-                    return None
+                if not param_type_token: self._synchronize_past_block(); return None
                 
                 params.append(Parameter(param_name_token.value, param_type_token.value, lineno=param_name_token.lineno))
                 
-                if not self.match('COMMA'): # No comma, so this should be the last parameter
-                    break 
-            # After loop, expect RPAREN
+                if not self.match('COMMA'): break 
             if not self.consume('RPAREN', "Expected ')' or ',' after parameter"):
-                self._synchronize_to_RBRACE_or_EOF()
-                return None
-        # If it was an immediate RPAREN, params list remains empty, which is correct.
+                 self._synchronize_past_block(); return None
         
         return_gox_type_token = self.consume_type("Expected return type for function")
         if not return_gox_type_token:
-            self._synchronize_to_RBRACE_or_EOF()
-            return None
+            self._synchronize_past_block(); return None
         
-        body_statements = self.parse_statements_block() 
-        # parse_statements_block handles LBRACE and RBRACE consumption for the block.
-        # If it returns [], it means the block was malformed (e.g. missing '{') or empty.
+        # Body parsing needs LBRACE
+        if not (self.current_token and self.current_token.type == 'LBRACE'):
+            self.error_handler.add_syntax_error("Expected '{' to start function body.", 
+                                                self.current_token.lineno if self.current_token else name_token.lineno)
+            self._synchronize_past_block() # Try to skip what might have been the body
+            return FunctionDecl(name_token.value, params, return_gox_type_token.value, [], lineno=func_token.lineno) # Return with empty body
 
+        body_statements = self.parse_statements_block() 
         return FunctionDecl(name_token.value, params, return_gox_type_token.value, body_statements, lineno=func_token.lineno)
 
-    def _synchronize_to_RBRACE_or_EOF(self):
-        """Advance tokens until an RBRACE or EOF is found, for error recovery."""
-        self._log_debug("Synchronizing: skipping tokens until '}' or EOF...")
-        while self.current_token and self.current_token.type != 'RBRACE':
-            self.advance()
-        if self.current_token and self.current_token.type == 'RBRACE':
-             self.advance() # Consume the RBRACE to clean up
-
-    def parse_import(self) -> Optional[Node]:
+    def parse_import(self) -> Optional[Node]: # ... (remains same)
         import_token = self.match('IMPORT')
         if not import_token: return None
-        
         node: Optional[Node] = None
         if self.match('FUNC'): 
             func_name_token = self.consume('ID', "Expected function name for import")
@@ -476,8 +433,7 @@ class Parser:
         else:
             self.error_handler.add_syntax_error("Expected 'func' or module name after 'import'", import_token.lineno)
         return node
-
-    def parse_print(self) -> Optional[Node]:
+    def parse_print(self) -> Optional[Node]: # ... (remains same)
         print_token = self.match('PRINT')
         if not print_token: return None
         expr = self.parse_expression()
@@ -487,8 +443,7 @@ class Parser:
             return None
         if not self.consume('SEMI', "Expected ';' after print statement"): return None
         return Print(expr, lineno=print_token.lineno)
-
-    def parse_if(self) -> Optional[Node]:
+    def parse_if(self) -> Optional[Node]: # ... (remains same)
         if_token = self.match('IF')
         if not if_token: return None
         condition = self.parse_expression() 
@@ -501,8 +456,7 @@ class Parser:
         if self.match('ELSE'):
             alternative_statements = self.parse_statements_block()
         return If(condition, consequence_statements, alternative_statements, lineno=if_token.lineno)
-
-    def parse_while(self) -> Optional[Node]:
+    def parse_while(self) -> Optional[Node]: # ... (remains same)
         while_token = self.match('WHILE')
         if not while_token: return None
         condition = self.parse_expression()
@@ -512,40 +466,28 @@ class Parser:
             return None
         body_statements = self.parse_statements_block()
         return While(condition, body_statements, lineno=while_token.lineno)
-
-    def parse_assignment(self) -> Optional[Node]:
-        # This method is now primarily called when parse_statement identifies an assignment context
-        # (e.g., after parsing a Location/MemoryAddress and seeing an '=').
-        # However, it can also be called directly if BACKTICK starts the statement.
-        
+    def parse_assignment(self) -> Optional[Node]: # ... (remains same, target parsed by parse_primary in parse_statement)
+        # This is now mainly for the case where BACKTICK starts a statement that becomes an assignment
         start_lineno = self.current_token.lineno if self.current_token else -1
-        
-        # The target (LHS) should have been parsed by parse_primary if called from parse_statement
-        # If called directly (e.g. for BACKTICK), parse_primary gets the target.
-        target = self.parse_primary()
-        
+        target = self.parse_primary() 
         if not target or not isinstance(target, (Location, MemoryAddress)):
             if target: 
                  self.error_handler.add_syntax_error(f"Invalid target for assignment. Expected variable or memory location, got {type(target).__name__}", start_lineno)
             elif not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
                  self.error_handler.add_syntax_error(f"Invalid or missing target for assignment.", start_lineno)
             return None
-
         if not self.consume('ASSIGN', "Expected '=' after assignment target"): return None
-        
         expr = self.parse_expression()
         if not expr:
             if not self.error_handler.has_errors_since(self.error_handler.get_error_count() -1 if self.error_handler.get_error_count() >0 else 0):
-                 self.error_handler.add_syntax_error("Expected expression on the right-hand side of assignment.", 
+                 self.error_handler.add_syntax_error("Expected expression on RHS of assignment.", 
                                               self.current_token.lineno if self.current_token else start_lineno)
             return None
-        
         if not self.consume('SEMI', "Expected ';' after assignment statement"): return None
-        
         assign_lineno = target.lineno if hasattr(target, 'lineno') and target.lineno is not None else start_lineno
         return Assignment(target, expr, lineno=assign_lineno)
 
-    def parse_return(self) -> Optional[Node]:
+    def parse_return(self) -> Optional[Node]: # ... (remains same)
         return_token = self.match('RETURN')
         if not return_token: return None
         expr: Optional[Node] = None
@@ -558,8 +500,7 @@ class Parser:
         if not self.consume('SEMI', "Expected ';' after return statement"): return None
         return Return(expr, lineno=return_token.lineno) 
 
-# --- Main function for Parser (driver) ---
-def main():
+def main(): # ... (remains same)
     from Lexer import tokenize 
     from Error import ErrorHandler 
     from AST_to_JSON import ast_to_json, save_ast_to_json, pretty_print_json
@@ -567,36 +508,22 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python Parser.py <source_file> [output_json_file]")
         sys.exit(1)
-
     source_file = sys.argv[1]
     output_file = sys.argv[2] if len(sys.argv) > 2 else source_file.replace('.gox', '.ast.json')
-
     try:
-        with open(source_file, 'r', encoding='utf-8') as f:
-            code = f.read()
+        with open(source_file, 'r', encoding='utf-8') as f: code = f.read()
     except FileNotFoundError:
-        print(f"Error: Source file '{source_file}' not found.")
-        sys.exit(1)
-    
+        print(f"Error: Source file '{source_file}' not found."); sys.exit(1)
     error_handler = ErrorHandler()
-    
     print(f"Tokenizing {source_file}...")
     tokens = tokenize(code, error_handler) 
-
-    if error_handler.has_errors():
-        print("\nLexical errors found:")
-        error_handler.report_errors()
-        sys.exit(1)
+    if error_handler.has_errors(): print("\nLexical errors found:"); error_handler.report_errors(); sys.exit(1)
     print(f"Tokenization successful ({len(tokens)} tokens).")
-
     print(f"\nParsing {source_file}...")
     parser = Parser(tokens, error_handler)
-    # parser.debug_mode = True # Enable debug prints for parser
     ast_program_node = parser.parse() 
-
     if error_handler.has_errors():
-        print("\nParsing errors found:")
-        error_handler.report_errors()
+        print("\nParsing errors found:"); error_handler.report_errors()
         if ast_program_node: 
             print("\nAttempting to output partial AST (due to parsing errors)...")
             try:
@@ -604,10 +531,8 @@ def main():
                 error_output_file = output_file.replace('.ast.json', '.ast_errors.json')
                 save_ast_to_json(ast_data_for_json, error_output_file)
                 pretty_print_json(ast_data_for_json)
-            except Exception as e:
-                print(f"Could not serialize/print partial AST due to: {e}")
+            except Exception as e: print(f"Could not serialize/print partial AST due to: {e}")
         sys.exit(1)
-
     if ast_program_node:
         print("Parsing successful. AST generated.")
         ast_data_for_json = ast_to_json(ast_program_node) 

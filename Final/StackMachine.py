@@ -2,7 +2,7 @@
 
 import sys
 import struct 
-from typing import List, Tuple, Any, Dict, Optional, Union, Callable
+from typing import List, Tuple, Any, Dict, Optional, Callable
 from Error import ErrorHandler
 # Assuming IRProgramRepresentation and IRFunctionRepresentation are defined
 # (e.g., in IRCodeGenerator.py or a shared ir_defs.py)
@@ -536,8 +536,4 @@ def main():
 
 
 if __name__ == '__main__':
-    from Lexer import tokenize 
-    from Parser import Parser
-    from SemanticAnalyzer import SemanticAnalyzer
-    from IRCodeGenerator import IRCodeGenerator
     main()
